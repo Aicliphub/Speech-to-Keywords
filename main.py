@@ -7,7 +7,7 @@ import time
 import uuid
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from google.generativeai import GenerativeAI as genai
+import google.generativeai as genai
 from openai import OpenAI
 from dotenv import load_dotenv
 
