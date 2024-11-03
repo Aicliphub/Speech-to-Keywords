@@ -1,22 +1,36 @@
-import requests
+import os
+import uuid
 import logging
-import json
+import requests
 import random
 import time
-import uuid
+import json
+import tempfile
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from dotenv import load_dotenv
 import google.generativeai as genai
 from openai import OpenAI
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 
+# Initialize FastAPI app
+app = FastAPI()
+
+# Retrieve API keys from environment variables
 gemini_api_keys = [
-    "AIzaSyCzmcLIlYR0kUsrZmTHolm_qO8yzPaaUNk",
-    "AIzaSyDxxzuuGGh1wT_Hjl7-WFNDXR8FL72XeFM",
-    "AIzaSyCGcxNi_ToOOWXGIKmByzJOAdRldAwiAvo",
-    "AIzaSyCVTbP_VjBEYRU1OFWGoSbaGXIZN8KNeXY",
-    "AIzaSyBaJWXjRAd39VYzGCmoz-yv4tJ6FiNTvIs"
+    os.getenv("GEMINI_API_KEY_1"),
+    os.getenv("GEMINI_API_KEY_2"),
+    os.getenv("GEMINI_API_KEY_3"),
+    os.getenv("GEMINI_API_KEY_4"),
+    os.getenv("GEMINI_API_KEY_5"),
 ]
+openai_api_key = os.getenv("OPENAI_API_KEY")
 
 # Function to select a random API key
 def get_random_api_key():
@@ -46,18 +60,14 @@ def process_chunk(chunk):
             model = genai.GenerativeModel(
                 model_name="gemini-1.5-pro-002",
                 generation_config=create_generation_config(),
-                system_instruction = """# Instructions
-
-Given the following video script and captions, extract three visually concrete and specific keywords from each sentence that can be used to search for background videos. The keywords should be short (preferably 1-2 words) and capture the main essence of the sentence. If a keyword is a single word, return another visually concrete keyword related to it. The list must always contain the most relevant and appropriate query searches.
-
-For example, if the caption is 'The cheetah is the fastest land animal, capable of running at speeds up to 75 mph', the keywords should include 'cheetah', 'speed', and 'running'. Similarly, for 'The Great Wall of China is one of the most iconic landmarks in the world', the keywords should be 'Great Wall', 'landmark', and 'China'.
-
-Please return the keywords in a simple format, without numbering or any additional prefixes, such as:
-- mountain peak
-- challenging trail
-- difficult journey
-"""
-
+                system_instruction="""# Instructions
+                Given the following video script and captions, extract three visually concrete and specific keywords from each sentence that can be used to search for background videos. The keywords should be short (preferably 1-2 words) and capture the main essence of the sentence. If a keyword is a single word, return another visually concrete keyword related to it. The list must always contain the most relevant and appropriate query searches.
+                For example, if the caption is 'The cheetah is the fastest land animal, capable of running at speeds up to 75 mph', the keywords should include 'cheetah', 'speed', and 'running'. Similarly, for 'The Great Wall of China is one of the most iconic landmarks in the world', the keywords should be 'Great Wall', 'landmark', and 'China'.
+                Please return the keywords in a simple format, without numbering or any additional prefixes, such as:
+                - mountain peak
+                - challenging trail
+                - difficult journey
+                """
             )
 
             chat_session = model.start_chat(
@@ -83,23 +93,19 @@ Please return the keywords in a simple format, without numbering or any addition
     return ""
 
 # Function to download audio file
-def download_audio(audio_url):
-    audio_filename = f"audio_{uuid.uuid4()}.mp3"  # Create a unique filename
+async def download_audio(audio_url):
     try:
-        response = requests.get(audio_url)
+        response = await requests.get(audio_url)  # Use await for async call
         response.raise_for_status()  # Raise an error for bad responses
-        with open(audio_filename, 'wb') as audio_file:
-            audio_file.write(response.content)
-        logging.info(f"Downloaded audio file: {audio_filename}")
+        return response.content
     except Exception as e:
         logging.error(f"Error downloading audio file: {e}")
         return None
-    return audio_filename
 
 # Function to transcribe audio
-def transcribe_audio(audio_filename):
+async def transcribe_audio(audio_filename):
     client = OpenAI(
-        api_key="FZqncRg9uxcpdKH4WVghkmtiesRr2S50",
+        api_key=openai_api_key,
         base_url="https://api.lemonfox.ai/v1"
     )
     
@@ -120,8 +126,8 @@ def transcribe_audio(audio_filename):
 def create_json_response(transcription):
     lines_with_keywords = []  # List to hold lines with their keywords
 
-    for segment in transcription.segments:
-        text = segment.text  # Correctly accessing the text attribute
+    for segment in transcription['segments']:
+        text = segment['text']
         keyword = process_chunk(text)  # Generate keyword for the scene
         
         # Append to the list for JSON response without timing
@@ -129,18 +135,33 @@ def create_json_response(transcription):
 
     return lines_with_keywords
 
-# Main script
-if __name__ == "__main__":
-    audio_url = "https://s3.us-east-1.amazonaws.com/gen.videos.s3/ElevenLabs_2024-08-20T22_37_01_Khemet+-+Deep+and+Powerful_gen_s50_sb75_se0_b_m2.mp3"
-    
+# Define the request model
+class AudioRequest(BaseModel):
+    audio_url: str
+
+# Define FastAPI endpoint
+@app.post("/transcribe/")
+async def transcribe_audio_endpoint(request: AudioRequest, background_tasks: BackgroundTasks):
     # Step 1: Download the audio file
-    audio_filename = download_audio(audio_url)
-    
-    if audio_filename:
-        # Step 2: Transcribe the audio
-        transcription = transcribe_audio(audio_filename)
+    audio_content = await download_audio(request.audio_url)
+
+    if audio_content:
+        # Step 2: Use a temporary file to save the audio
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_audio_file:
+            temp_audio_file.write(audio_content)
+            temp_audio_filename = temp_audio_file.name
         
+        # Step 3: Transcribe the audio
+        transcription = await transcribe_audio(temp_audio_filename)
+
+        # Cleanup the temporary file
+        os.remove(temp_audio_filename)
+
         if transcription:
             # Create JSON response
             json_response = create_json_response(transcription)
-            print(json.dumps(json_response, indent=4))  # Display JSON data in the terminal
+            return JSONResponse(content=json_response)
+
+    raise HTTPException(status_code=500, detail="Error processing the audio file.")
+
+# Run the application using: uvicorn app:app --reload
