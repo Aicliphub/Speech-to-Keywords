@@ -3,11 +3,10 @@ import logging
 import tempfile
 import httpx
 import random
-import json
+import asyncio
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from openai import OpenAI
 import google.generativeai as genai
 from dotenv import load_dotenv
 
@@ -135,7 +134,8 @@ def create_json_response(transcription):
 
     for segment in transcription.segments:
         text = segment['text']
-        keyword = await process_chunk(text)  # Generate keyword for the scene
+        # Use asyncio.run to call process_chunk
+        keyword = asyncio.run(process_chunk(text))  # Generate keyword for the scene
         
         # Append to the list for JSON response without timing
         lines_with_keywords.append({"text": text, "keyword": keyword})
