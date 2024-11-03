@@ -4,6 +4,7 @@ import tempfile
 import httpx
 import random
 import asyncio
+from openai import OpenAI
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
