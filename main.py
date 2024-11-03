@@ -6,7 +6,7 @@ import time
 import uuid
 import google.generativeai as genai
 from openai import OpenAI
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Query
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -124,7 +124,7 @@ def transcribe_audio(audio_filename):
 def create_json_response(transcription):
     lines_with_keywords = []  # List to hold lines with their keywords
 
-    for segment in transcription['segments']:  # Adjusted for JSON response format
+    for segment in transcription.segments:
         text = segment['text']
         keyword = process_chunk(text)  # Generate keyword for the scene
         
@@ -135,7 +135,7 @@ def create_json_response(transcription):
 
 # Define an endpoint for the API
 @app.post("/transcribe/")
-async def transcribe_audio_endpoint(audio_url: str = Body(...)):
+async def transcribe_audio_endpoint(audio_url: str = Query(...)):
     # Step 1: Download the audio file
     audio_filename = download_audio(audio_url)
     
