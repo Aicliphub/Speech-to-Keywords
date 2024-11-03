@@ -1,17 +1,15 @@
 import os
 import uuid
 import logging
-import requests
 import random
 import time
-import json
 import tempfile
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import google.generativeai as genai
-from openai import OpenAI
+import httpx
 
 # Load environment variables from .env file
 load_dotenv()
@@ -94,13 +92,14 @@ def process_chunk(chunk):
 
 # Function to download audio file
 async def download_audio(audio_url):
-    try:
-        response = await requests.get(audio_url)  # Use await for async call
-        response.raise_for_status()  # Raise an error for bad responses
-        return response.content
-    except Exception as e:
-        logging.error(f"Error downloading audio file: {e}")
-        return None
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(audio_url)
+            response.raise_for_status()  # Raise an error for bad responses
+            return response.content
+        except Exception as e:
+            logging.error(f"Error downloading audio file: {e}")
+            return None
 
 # Function to transcribe audio
 async def transcribe_audio(audio_filename):
