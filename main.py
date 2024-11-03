@@ -4,10 +4,10 @@ import tempfile
 import httpx
 import random
 import asyncio
-from openai import OpenAI
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from openai import OpenAI
 import google.generativeai as genai
 from dotenv import load_dotenv
 
@@ -133,15 +133,15 @@ async def transcribe_audio(audio_filename):
 def create_json_response(transcription):
     lines_with_keywords = []  # List to hold lines with their keywords
 
-    for segment in transcription.segments:
+    for segment in transcription['segments']:
         text = segment['text']
         # Use asyncio.run to call process_chunk
         keyword = asyncio.run(process_chunk(text))  # Generate keyword for the scene
         
-        # Append to the list for JSON response without timing
+        # Append to the list for JSON response
         lines_with_keywords.append({"text": text, "keyword": keyword})
 
-    return lines_with_keywords
+    return {"segments": lines_with_keywords}
 
 # Endpoint for transcribing audio and generating keywords
 @app.post("/transcribe/")
