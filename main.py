@@ -1,31 +1,37 @@
 import os
 import requests
 import logging
+import json
 import random
 import time
 import uuid
-import google.generativeai as genai
-from openai import OpenAI
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from fastapi.responses import JSONResponse
+from google.generativeai import GenerativeAI as genai
+from openai import OpenAI
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 
-# Define the FastAPI app
-app = FastAPI()
-
-# Replace with your actual API keys from .env
-gemini_api_keys = os.getenv("GEMINI_API_KEYS").split(",")
+# API keys for Google Generative API (Gemini) and OpenAI Whisper API
+gemini_api_keys = [
+    os.getenv("GEMINI_API_KEY_1"),
+    os.getenv("GEMINI_API_KEY_2"),
+    os.getenv("GEMINI_API_KEY_3"),
+    os.getenv("GEMINI_API_KEY_4"),
+    os.getenv("GEMINI_API_KEY_5")
+]
 openai_api_key = os.getenv("OPENAI_API_KEY")
 
-# Define the request body model
-class AudioRequest(BaseModel):
+# Initialize FastAPI
+app = FastAPI()
+
+# Request model for the API
+class AudioURLRequest(BaseModel):
     audio_url: str
 
 # Function to select a random API key
@@ -42,9 +48,9 @@ def create_generation_config():
         "response_mime_type": "text/plain",
     }
 
-# Function to generate keywords from text chunks with retries
+# Function to generate keywords from text chunks
 def process_chunk(chunk):
-    max_attempts = len(gemini_api_keys) + 3  # Allowing extra attempts for retry
+    max_attempts = len(gemini_api_keys)
     delay = 2  # Start with a 2-second delay
     attempts = 0
 
@@ -56,11 +62,9 @@ def process_chunk(chunk):
             model = genai.GenerativeModel(
                 model_name="gemini-1.5-pro-002",
                 generation_config=create_generation_config(),
-                system_instruction="""# Instructions
+                system_instruction = """# Instructions
 
 Given the following video script and captions, extract three visually concrete and specific keywords from each sentence that can be used to search for background videos. The keywords should be short (preferably 1-2 words) and capture the main essence of the sentence. If a keyword is a single word, return another visually concrete keyword related to it. The list must always contain the most relevant and appropriate query searches.
-
-For example, if the caption is 'The cheetah is the fastest land animal, capable of running at speeds up to 75 mph', the keywords should include 'cheetah', 'speed', and 'running'. Similarly, for 'The Great Wall of China is one of the most iconic landmarks in the world', the keywords should be 'Great Wall', 'landmark', and 'China'.
 
 Please return the keywords in a simple format, without numbering or any additional prefixes, such as:
 - mountain peak
@@ -86,7 +90,7 @@ Please return the keywords in a simple format, without numbering or any addition
                 time.sleep(delay)
                 delay *= 2  # Exponential backoff
             else:
-                attempts += 1  # Increment attempts for other errors
+                break
 
     logging.error("All API keys exhausted or failed.")
     return ""
@@ -129,49 +133,41 @@ def transcribe_audio(audio_filename):
 def create_json_response(transcription):
     lines_with_keywords = []  # List to hold lines with their keywords
 
-    for segment in transcription['segments']:  # Access segments from the transcription response
+    for segment in transcription.segments:
         text = segment['text']
         keyword = process_chunk(text)  # Generate keyword for the scene
-        start_time = segment['start']  # Assuming start time is available
-        end_time = segment['end']  # Assuming end time is available
         
-        # Append to the list for JSON response with timing
-        lines_with_keywords.append({
-            "text": text,
-            "keyword": keyword,
-            "start_time": start_time,
-            "end_time": end_time
-        })
+        # Append to the list for JSON response without timing
+        lines_with_keywords.append({"text": text, "keyword": keyword})
 
     return lines_with_keywords
 
-# Define the API endpoint for audio processing
-@app.post("/process-audio")
-async def process_audio(request: AudioRequest):
-    audio_url = request.audio_url
-    
-    # Step 1: Download the audio file
-    audio_filename = download_audio(audio_url)
-    
-    if audio_filename:
-        try:
-            # Step 2: Transcribe the audio
-            transcription = transcribe_audio(audio_filename)
-            
-            if transcription:
-                # Create JSON response
-                json_response = create_json_response(transcription)
-                return JSONResponse(content=json_response)
-            else:
-                raise HTTPException(status_code=500, detail="Transcription failed.")
-        finally:
-            # Clean up temporary audio file after processing
-            try:
-                os.remove(audio_filename)
-                logging.info(f"Deleted temporary audio file: {audio_filename}")
-            except Exception as e:
-                logging.error(f"Error deleting audio file: {e}")
-    else:
-        raise HTTPException(status_code=500, detail="Audio download failed.")
+# Clean up temporary files after processing
+def cleanup_file(filepath):
+    try:
+        os.remove(filepath)
+        logging.info(f"Deleted file: {filepath}")
+    except Exception as e:
+        logging.error(f"Failed to delete file {filepath}: {e}")
 
-# Run the application with the command: uvicorn your_filename:app --reload
+# FastAPI endpoint for processing audio URL
+@app.post("/transcribe_and_generate_keywords")
+async def transcribe_and_generate_keywords(request: AudioURLRequest, background_tasks: BackgroundTasks):
+    audio_filename = download_audio(request.audio_url)
+    
+    if not audio_filename:
+        raise HTTPException(status_code=400, detail="Failed to download audio.")
+
+    # Step 2: Transcribe the audio
+    transcription = transcribe_audio(audio_filename)
+    
+    if not transcription:
+        raise HTTPException(status_code=500, detail="Failed to transcribe audio.")
+
+    # Generate JSON response with keywords
+    json_response = create_json_response(transcription)
+
+    # Schedule file cleanup after response
+    background_tasks.add_task(cleanup_file, audio_filename)
+    
+    return json_response
