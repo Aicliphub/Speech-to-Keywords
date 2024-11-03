@@ -1,38 +1,27 @@
-import os
+import requests
 import logging
-import tempfile
-import httpx
+import json
 import random
-import asyncio
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-from openai import OpenAI
+import time
+import uuid
 import google.generativeai as genai
-from dotenv import load_dotenv
-
-# Load environment variables from .env file
-load_dotenv()
+from openai import OpenAI
+from fastapi import FastAPI, HTTPException
 
 # Set up logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO)
 
 # Initialize FastAPI app
 app = FastAPI()
 
-# Load API keys from environment variables
+# Your Google API keys
 gemini_api_keys = [
-    os.getenv("GEMINI_API_KEY_1"),
-    os.getenv("GEMINI_API_KEY_2"),
-    os.getenv("GEMINI_API_KEY_3"),
-    os.getenv("GEMINI_API_KEY_4"),
-    os.getenv("GEMINI_API_KEY_5")
+    "AIzaSyCzmcLIlYR0kUsrZmTHolm_qO8yzPaaUNk",
+    "AIzaSyDxxzuuGGh1wT_Hjl7-WFNDXR8FL72XeFM",
+    "AIzaSyCGcxNi_ToOOWXGIKmByzJOAdRldAwiAvo",
+    "AIzaSyCVTbP_VjBEYRU1OFWGoSbaGXIZN8KNeXY",
+    "AIzaSyBaJWXjRAd39VYzGCmoz-yv4tJ6FiNTvIs"
 ]
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Function to select a random API key
 def get_random_api_key():
@@ -48,12 +37,8 @@ def create_generation_config():
         "response_mime_type": "text/plain",
     }
 
-# Define request model
-class AudioRequest(BaseModel):
-    audio_url: str
-
 # Function to generate keywords from text chunks
-async def process_chunk(chunk):
+def process_chunk(chunk):
     max_attempts = len(gemini_api_keys)
     delay = 2  # Start with a 2-second delay
     attempts = 0
@@ -83,7 +68,7 @@ Please return the keywords in a simple format, without numbering or any addition
                 history=[{"role": "user", "parts": [chunk]}]
             )
 
-            response = await chat_session.send_message(chunk)
+            response = chat_session.send_message(chunk)
             if response and hasattr(response, 'text') and response.text:
                 return response.text.strip()
 
@@ -93,7 +78,7 @@ Please return the keywords in a simple format, without numbering or any addition
             if "Resource has been exhausted" in str(e) or "429" in str(e):
                 attempts += 1
                 logging.info(f"Retrying with a new API key after {delay} seconds...")
-                await asyncio.sleep(delay)
+                time.sleep(delay)
                 delay *= 2  # Exponential backoff
             else:
                 break
@@ -102,19 +87,25 @@ Please return the keywords in a simple format, without numbering or any addition
     return ""
 
 # Function to download audio file
-async def download_audio(audio_url):
+def download_audio(audio_url):
+    audio_filename = f"audio_{uuid.uuid4()}.mp3"  # Create a unique filename
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(audio_url)
-            response.raise_for_status()  # Raise an error for bad responses
-            return response.content  # Return the audio content
+        response = requests.get(audio_url)
+        response.raise_for_status()  # Raise an error for bad responses
+        with open(audio_filename, 'wb') as audio_file:
+            audio_file.write(response.content)
+        logging.info(f"Downloaded audio file: {audio_filename}")
     except Exception as e:
         logging.error(f"Error downloading audio file: {e}")
         return None
+    return audio_filename
 
 # Function to transcribe audio
-async def transcribe_audio(audio_filename):
-    client = OpenAI(api_key=OPENAI_API_KEY, base_url="https://api.lemonfox.ai/v1")
+def transcribe_audio(audio_filename):
+    client = OpenAI(
+        api_key="FZqncRg9uxcpdKH4WVghkmtiesRr2S50",
+        base_url="https://api.lemonfox.ai/v1"
+    )
     
     try:
         with open(audio_filename, "rb") as audio_file:
@@ -133,52 +124,30 @@ async def transcribe_audio(audio_filename):
 def create_json_response(transcription):
     lines_with_keywords = []  # List to hold lines with their keywords
 
-    for segment in transcription['segments']:
+    for segment in transcription.segments:
         text = segment['text']
-        # Use asyncio.run to call process_chunk
-        keyword = asyncio.run(process_chunk(text))  # Generate keyword for the scene
+        keyword = process_chunk(text)  # Generate keyword for the scene
         
-        # Append to the list for JSON response
+        # Append to the list for JSON response without timing
         lines_with_keywords.append({"text": text, "keyword": keyword})
 
-    return {"segments": lines_with_keywords}
+    return lines_with_keywords
 
-# Endpoint for transcribing audio and generating keywords
+# Define an endpoint for the API
 @app.post("/transcribe/")
-async def transcribe_audio_endpoint(request: AudioRequest, background_tasks: BackgroundTasks):
-    try:
-        # Step 1: Download the audio file
-        audio_content = await download_audio(request.audio_url)
-
-        if audio_content:
-            # Step 2: Use a temporary file to save the audio
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_audio_file:
-                temp_audio_file.write(audio_content)
-                temp_audio_filename = temp_audio_file.name
-            
-            # Step 3: Transcribe the audio
-            transcription = await transcribe_audio(temp_audio_filename)
-
-            # Cleanup the temporary file
-            os.remove(temp_audio_filename)
-
-            if transcription:
-                # Create JSON response
-                json_response = create_json_response(transcription)
-                return JSONResponse(content=json_response)
-
-        raise HTTPException(status_code=500, detail="Error processing the audio file.")
+async def transcribe_audio_endpoint(audio_url: str):
+    # Step 1: Download the audio file
+    audio_filename = download_audio(audio_url)
     
-    except Exception as e:
-        logging.error(f"Error in transcribe_audio_endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+    if audio_filename:
+        # Step 2: Transcribe the audio
+        transcription = transcribe_audio(audio_filename)
+        
+        if transcription:
+            # Create JSON response
+            json_response = create_json_response(transcription)
+            return json_response  # Return JSON data
 
-# Health check endpoint
-@app.get("/health/")
-async def health_check():
-    return {"status": "ok"}
+    raise HTTPException(status_code=400, detail="Error processing the audio file.")
 
-# Main execution
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="debug")
+# Run the app with: uvicorn script_name:app --reload
