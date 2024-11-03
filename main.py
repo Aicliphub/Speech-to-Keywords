@@ -62,7 +62,7 @@ def process_chunk(chunk):
             model = genai.GenerativeModel(
                 model_name="gemini-1.5-pro-002",
                 generation_config=create_generation_config(),
-                system_instruction = """# Instructions
+                system_instruction="""# Instructions
 
 Given the following video script and captions, extract three visually concrete and specific keywords from each sentence that can be used to search for background videos. The keywords should be short (preferably 1-2 words) and capture the main essence of the sentence. If a keyword is a single word, return another visually concrete keyword related to it. The list must always contain the most relevant and appropriate query searches.
 
@@ -133,8 +133,8 @@ def transcribe_audio(audio_filename):
 def create_json_response(transcription):
     lines_with_keywords = []  # List to hold lines with their keywords
 
-    for segment in transcription.segments:
-        text = segment['text']
+    for segment in transcription['segments']:  # Access segments correctly
+        text = segment.text  # Access the 'text' attribute of the segment object
         keyword = process_chunk(text)  # Generate keyword for the scene
         
         # Append to the list for JSON response without timing
