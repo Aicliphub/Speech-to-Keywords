@@ -1,38 +1,22 @@
-import os
 import requests
 import logging
 import json
 import random
 import time
 import uuid
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from pydantic import BaseModel
 import google.generativeai as genai
 from openai import OpenAI
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 
-# API keys for Google Generative API (Gemini) and OpenAI Whisper API
 gemini_api_keys = [
-    os.getenv("GEMINI_API_KEY_1"),
-    os.getenv("GEMINI_API_KEY_2"),
-    os.getenv("GEMINI_API_KEY_3"),
-    os.getenv("GEMINI_API_KEY_4"),
-    os.getenv("GEMINI_API_KEY_5")
+    "AIzaSyCzmcLIlYR0kUsrZmTHolm_qO8yzPaaUNk",
+    "AIzaSyDxxzuuGGh1wT_Hjl7-WFNDXR8FL72XeFM",
+    "AIzaSyCGcxNi_ToOOWXGIKmByzJOAdRldAwiAvo",
+    "AIzaSyCVTbP_VjBEYRU1OFWGoSbaGXIZN8KNeXY",
+    "AIzaSyBaJWXjRAd39VYzGCmoz-yv4tJ6FiNTvIs"
 ]
-openai_api_key = os.getenv("OPENAI_API_KEY")
-
-# Initialize FastAPI
-app = FastAPI()
-
-# Request model for the API
-class AudioURLRequest(BaseModel):
-    audio_url: str
 
 # Function to select a random API key
 def get_random_api_key():
@@ -62,15 +46,18 @@ def process_chunk(chunk):
             model = genai.GenerativeModel(
                 model_name="gemini-1.5-pro-002",
                 generation_config=create_generation_config(),
-                system_instruction="""# Instructions
+                system_instruction = """# Instructions
 
 Given the following video script and captions, extract three visually concrete and specific keywords from each sentence that can be used to search for background videos. The keywords should be short (preferably 1-2 words) and capture the main essence of the sentence. If a keyword is a single word, return another visually concrete keyword related to it. The list must always contain the most relevant and appropriate query searches.
+
+For example, if the caption is 'The cheetah is the fastest land animal, capable of running at speeds up to 75 mph', the keywords should include 'cheetah', 'speed', and 'running'. Similarly, for 'The Great Wall of China is one of the most iconic landmarks in the world', the keywords should be 'Great Wall', 'landmark', and 'China'.
 
 Please return the keywords in a simple format, without numbering or any additional prefixes, such as:
 - mountain peak
 - challenging trail
 - difficult journey
 """
+
             )
 
             chat_session = model.start_chat(
@@ -112,7 +99,7 @@ def download_audio(audio_url):
 # Function to transcribe audio
 def transcribe_audio(audio_filename):
     client = OpenAI(
-        api_key=openai_api_key,
+        api_key="FZqncRg9uxcpdKH4WVghkmtiesRr2S50",
         base_url="https://api.lemonfox.ai/v1"
     )
     
@@ -133,8 +120,8 @@ def transcribe_audio(audio_filename):
 def create_json_response(transcription):
     lines_with_keywords = []  # List to hold lines with their keywords
 
-    for segment in transcription['segments']:  # Access segments correctly
-        text = segment.text  # Access the 'text' attribute of the segment object
+    for segment in transcription.segments:
+        text = segment.text  # Correctly accessing the text attribute
         keyword = process_chunk(text)  # Generate keyword for the scene
         
         # Append to the list for JSON response without timing
@@ -142,32 +129,18 @@ def create_json_response(transcription):
 
     return lines_with_keywords
 
-# Clean up temporary files after processing
-def cleanup_file(filepath):
-    try:
-        os.remove(filepath)
-        logging.info(f"Deleted file: {filepath}")
-    except Exception as e:
-        logging.error(f"Failed to delete file {filepath}: {e}")
-
-# FastAPI endpoint for processing audio URL
-@app.post("/transcribe_and_generate_keywords")
-async def transcribe_and_generate_keywords(request: AudioURLRequest, background_tasks: BackgroundTasks):
-    audio_filename = download_audio(request.audio_url)
+# Main script
+if __name__ == "__main__":
+    audio_url = "https://s3.us-east-1.amazonaws.com/gen.videos.s3/ElevenLabs_2024-08-20T22_37_01_Khemet+-+Deep+and+Powerful_gen_s50_sb75_se0_b_m2.mp3"
     
-    if not audio_filename:
-        raise HTTPException(status_code=400, detail="Failed to download audio.")
-
-    # Step 2: Transcribe the audio
-    transcription = transcribe_audio(audio_filename)
+    # Step 1: Download the audio file
+    audio_filename = download_audio(audio_url)
     
-    if not transcription:
-        raise HTTPException(status_code=500, detail="Failed to transcribe audio.")
-
-    # Generate JSON response with keywords
-    json_response = create_json_response(transcription)
-
-    # Schedule file cleanup after response
-    background_tasks.add_task(cleanup_file, audio_filename)
-    
-    return json_response
+    if audio_filename:
+        # Step 2: Transcribe the audio
+        transcription = transcribe_audio(audio_filename)
+        
+        if transcription:
+            # Create JSON response
+            json_response = create_json_response(transcription)
+            print(json.dumps(json_response, indent=4))  # Display JSON data in the terminal
