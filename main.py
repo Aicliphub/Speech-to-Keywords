@@ -1,3 +1,4 @@
+import os
 import requests
 import logging
 import json
@@ -7,12 +8,13 @@ import uuid
 import google.generativeai as genai
 from openai import OpenAI
 from fastapi import FastAPI, HTTPException, Query
+import uvicorn
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 
-# Initialize FastAPI app
-app = FastAPI()
+# Initialize FastAPI app with debug mode enabled
+app = FastAPI(debug=True)
 
 # Your Google API keys
 gemini_api_keys = [
@@ -79,7 +81,7 @@ Please return the keywords in a simple format, without numbering or any addition
                 attempts += 1
                 logging.info(f"Retrying with a new API key after {delay} seconds...")
                 time.sleep(delay)
-                delay *= 2  # Exponential backoff
+                delay = min(delay * 2, 60)  # Exponential backoff with max delay of 60 seconds
             else:
                 break
 
@@ -124,12 +126,13 @@ def transcribe_audio(audio_filename):
 def create_json_response(transcription):
     lines_with_keywords = []  # List to hold lines with their keywords
 
-    for segment in transcription.segments:
-        text = segment['text']
-        keyword = process_chunk(text)  # Generate keyword for the scene
-        
-        # Append to the list for JSON response without timing
-        lines_with_keywords.append({"text": text, "keyword": keyword})
+    if transcription and 'segments' in transcription:
+        for segment in transcription['segments']:
+            text = segment['text']
+            keyword = process_chunk(text)  # Generate keyword for the scene
+            
+            # Append to the list for JSON response without timing
+            lines_with_keywords.append({"text": text, "keyword": keyword})
 
     return lines_with_keywords
 
@@ -140,14 +143,23 @@ async def transcribe_audio_endpoint(audio_url: str = Query(...)):
     audio_filename = download_audio(audio_url)
     
     if audio_filename:
-        # Step 2: Transcribe the audio
-        transcription = transcribe_audio(audio_filename)
-        
-        if transcription:
-            # Create JSON response
-            json_response = create_json_response(transcription)
-            return json_response  # Return JSON data
+        try:
+            # Step 2: Transcribe the audio
+            transcription = transcribe_audio(audio_filename)
+            
+            if transcription:
+                # Create JSON response
+                json_response = create_json_response(transcription)
+                return json_response  # Return JSON data
+        finally:
+            # Cleanup the downloaded audio file
+            if os.path.exists(audio_filename):
+                os.remove(audio_filename)
+                logging.info(f"Deleted temporary file: {audio_filename}")
 
     raise HTTPException(status_code=400, detail="Error processing the audio file.")
 
-# Run the app with: uvicorn script_name:app --reload
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
