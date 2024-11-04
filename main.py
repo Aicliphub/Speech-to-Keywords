@@ -8,7 +8,7 @@ import tempfile
 import os
 import google.generativeai as genai
 from openai import OpenAI
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -16,6 +16,7 @@ logging.basicConfig(level=logging.INFO)
 # Initialize FastAPI app
 app = FastAPI()
 
+# List of API keys for Gemini
 gemini_api_keys = [
     "AIzaSyCzmcLIlYR0kUsrZmTHolm_qO8yzPaaUNk",
     "AIzaSyDxxzuuGGh1wT_Hjl7-WFNDXR8FL72XeFM",
@@ -128,7 +129,7 @@ def transcribe_audio(audio_filename):
 # Function to extract segments from the transcription response
 def extract_segments(transcription):
     # Access the segments directly from the transcription object
-    return transcription.segments if hasattr(transcription, 'segments') else []
+    return transcription['segments'] if 'segments' in transcription else []
 
 # Function to create JSON response from transcription
 def create_json_response(transcription):
@@ -187,9 +188,9 @@ async def process_audio(audio_url: str):
             os.remove(audio_filename)  # Remove the temporary file
             return json_response
         else:
-            return {"error": "Transcription failed"}
+            raise HTTPException(status_code=500, detail="Transcription failed")
     else:
-        return {"error": "Audio download failed"}
+        raise HTTPException(status_code=500, detail="Audio download failed")
 
 # Main script
 if __name__ == "__main__":
