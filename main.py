@@ -8,7 +8,8 @@ import tempfile
 import os
 import google.generativeai as genai
 from openai import OpenAI
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
+from pydantic import BaseModel
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -16,7 +17,10 @@ logging.basicConfig(level=logging.INFO)
 # Initialize FastAPI app
 app = FastAPI()
 
-# List of API keys for Gemini
+# Define a request model
+class AudioRequest(BaseModel):
+    audio_url: str
+
 gemini_api_keys = [
     "AIzaSyCzmcLIlYR0kUsrZmTHolm_qO8yzPaaUNk",
     "AIzaSyDxxzuuGGh1wT_Hjl7-WFNDXR8FL72XeFM",
@@ -129,7 +133,7 @@ def transcribe_audio(audio_filename):
 # Function to extract segments from the transcription response
 def extract_segments(transcription):
     # Access the segments directly from the transcription object
-    return transcription['segments'] if 'segments' in transcription else []
+    return transcription.segments if hasattr(transcription, 'segments') else []
 
 # Function to create JSON response from transcription
 def create_json_response(transcription):
@@ -172,7 +176,8 @@ def create_json_response(transcription):
 
 # FastAPI endpoint for audio processing
 @app.post("/process-audio/")
-async def process_audio(audio_url: str):
+async def process_audio(request: AudioRequest):
+    audio_url = request.audio_url  # Access the audio_url from the request body
     # Step 1: Download the audio file
     audio_filename = download_audio(audio_url)
     
@@ -188,9 +193,9 @@ async def process_audio(audio_url: str):
             os.remove(audio_filename)  # Remove the temporary file
             return json_response
         else:
-            raise HTTPException(status_code=500, detail="Transcription failed")
+            return {"error": "Transcription failed"}
     else:
-        raise HTTPException(status_code=500, detail="Audio download failed")
+        return {"error": "Audio download failed"}
 
 # Main script
 if __name__ == "__main__":
