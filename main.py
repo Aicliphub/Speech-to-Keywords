@@ -99,7 +99,7 @@ def transcribe_audio(temp_audio_file):
     )
 
     try:
-        with temp_audio_file as audio_file:
+        with open(temp_audio_file.name, "rb") as audio_file:
             transcript = client.audio.transcriptions.create(
                 model="whisper-1",
                 file=audio_file,
@@ -114,8 +114,9 @@ def transcribe_audio(temp_audio_file):
 def create_json_response(transcription):
     lines_with_keywords = []
 
+    # Assuming transcription is a dictionary-like object, modify if needed
     for segment in transcription.segments:
-        text = segment.text  # Correctly access the 'text' attribute
+        text = segment['text']
         keyword = process_chunk(text)
         lines_with_keywords.append({"text": text, "keyword": keyword})
 
