@@ -146,15 +146,15 @@ def create_json_response(transcription):
     for i in range(total_segments):
         segment = segments[i]
 
-        # Assuming segment is a dictionary, access keys appropriately
-        text = segment.get('text', '')  # Use .get() to avoid KeyError
-        start_time = segment.get('start', 0)  # Provide default value if key is missing
+        # Access attributes correctly
+        text = segment.text if hasattr(segment, 'text') else ''
+        start_time = segment.start if hasattr(segment, 'start') else 0  # Provide default value if key is missing
 
         # Calculate finish time
         if i < total_segments - 1:
-            finish_time = segments[i + 1].get('start', start_time + 1)  # Default to start_time + 1 if missing
+            finish_time = segments[i + 1].start if hasattr(segments[i + 1], 'start') else start_time + 1
         else:
-            finish_time = segment.get('end', start_time + 1)  # Provide a default if 'end' is not present
+            finish_time = segment.end if hasattr(segment, 'end') else start_time + 1  # Default if 'end' is not present
 
         logging.info(f"Processing segment: '{text}'")  # Log the current segment being processed
         keyword = process_chunk(text)  # Generate keywords for the scene
