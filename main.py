@@ -2,11 +2,13 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import requests
 import logging
+import json
 import random
 import time
-import tempfile
+import uuid
 import google.generativeai as genai
 from openai import OpenAI
+from tempfile import NamedTemporaryFile
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -14,7 +16,6 @@ app = FastAPI()
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 
-# API keys for Gemini
 gemini_api_keys = [
     "AIzaSyCzmcLIlYR0kUsrZmTHolm_qO8yzPaaUNk",
     "AIzaSyDxxzuuGGh1wT_Hjl7-WFNDXR8FL72XeFM",
@@ -82,26 +83,23 @@ def download_audio(audio_url):
     try:
         response = requests.get(audio_url)
         response.raise_for_status()
-        
-        # Use NamedTemporaryFile so we can get a path and reopen the file easily
-        temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-        with open(temp_audio_file.name, 'wb') as f:
-            f.write(response.content)
-        
+        temp_audio_file = NamedTemporaryFile(delete=True, suffix=".mp3")
+        temp_audio_file.write(response.content)
+        temp_audio_file.seek(0)
         logging.info("Audio downloaded and stored in temporary file.")
-        return temp_audio_file.name  # Return the file path
+        return temp_audio_file
     except Exception as e:
         logging.error(f"Error downloading audio file: {e}")
         return None
 
-def transcribe_audio(audio_filename):
+def transcribe_audio(temp_audio_file):
     client = OpenAI(
         api_key="FZqncRg9uxcpdKH4WVghkmtiesRr2S50",
         base_url="https://api.lemonfox.ai/v1"
     )
 
     try:
-        with open(audio_filename, "rb") as audio_file:
+        with temp_audio_file as audio_file:
             transcript = client.audio.transcriptions.create(
                 model="whisper-1",
                 file=audio_file,
@@ -116,8 +114,8 @@ def transcribe_audio(audio_filename):
 def create_json_response(transcription):
     lines_with_keywords = []
 
-    for segment in transcription['segments']:
-        text = segment['text']
+    for segment in transcription.segments:
+        text = segment.text  # Correctly access the 'text' attribute
         keyword = process_chunk(text)
         lines_with_keywords.append({"text": text, "keyword": keyword})
 
@@ -128,11 +126,11 @@ async def transcribe_audio_url(request: AudioRequest):
     audio_url = request.audio_url
 
     # Step 1: Download the audio file
-    audio_filename = download_audio(audio_url)
+    temp_audio_file = download_audio(audio_url)
     
-    if audio_filename:
+    if temp_audio_file:
         # Step 2: Transcribe the audio
-        transcription = transcribe_audio(audio_filename)
+        transcription = transcribe_audio(temp_audio_file)
         
         if transcription:
             # Step 3: Create JSON response
