@@ -9,6 +9,7 @@ import os
 import google.generativeai as genai
 from openai import OpenAI
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # Set up logging
@@ -16,6 +17,11 @@ logging.basicConfig(level=logging.INFO)
 
 # Initialize FastAPI app
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=['*']
+)
 
 # Define a request model
 class AudioRequest(BaseModel):
