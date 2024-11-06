@@ -150,11 +150,16 @@ def generate_keywords_from_segments(segments_json) -> List[Segment]:
 
     # Create a prompt for the Gemini model
     prompt = """
-    Given the following video segments, extract three visually concrete and specific keywords from each segment that can be used to search for background videos. The keywords should be short (preferably 1-2 words) and capture the main essence of the segment. If a keyword is a single word, return another visually concrete keyword related to it. The list must always contain the most relevant and appropriate query searches.
+    Given the following video segments, please generate exactly three visually concrete and specific keywords for each segment. These keywords should be short (ideally 1-2 words), relevant, and capture the main visual or thematic essence of each segment. Each keyword list should suggest terms that can be used to search for related background visuals.
 
-    Please return the results as a list of lists, where each inner list contains three keywords for a segment.
+Guidelines:
 
-    Here are the segments to process:
+Conciseness: Each keyword should be concise but meaningful, focusing on visually distinct or impactful elements in the segment.
+Concrete Visuals: If a keyword is a single word or too broad, add a related keyword to ensure it aligns well with visually concrete or vivid imagery.
+Consistency: Ensure each segment receives exactly three relevant keywords to maintain consistent output.
+Return the results as a list of lists, with each inner list containing three keywords for a corresponding segment.
+
+Segments to process:
     """
     prompt += json.dumps([segment["text"] for segment in segments_json])
     prompt += f"\n\nMake sure to return exactly {len(segments_json)} lists of keywords, one for each segment."
