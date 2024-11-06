@@ -1,9 +1,7 @@
 fastapi
 uvicorn
 requests
+pydantic
+typing-extensions
 google-generativeai
 openai
-python-dotenv
-httpx
-pydantic
-aiohttp
