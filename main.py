@@ -1,4 +1,3 @@
-import asyncio
 import requests
 import logging
 import json
@@ -12,7 +11,6 @@ from openai import OpenAI
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from asyncio import Semaphore
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -54,14 +52,8 @@ def create_generation_config():
         "response_mime_type": "text/plain",
     }
 
-# Semaphore to limit concurrency to 10
-semaphore = Semaphore(10)
-
-# Queue to manage requests
-queue = asyncio.Queue()
-
-# Function to process chunk asynchronously
-async def process_chunk(chunk):
+# Function to generate keywords from text chunks
+def process_chunk(chunk):
     max_attempts = len(gemini_api_keys)
     delay = 2  # Start with a 2-second delay
     attempts = 0
@@ -78,7 +70,7 @@ async def process_chunk(chunk):
 
 Given the following video script and captions, extract three visually concrete and specific keywords from each sentence that can be used to search for background videos. The keywords should be short (preferably 1-2 words) and capture the main essence of the sentence. If a keyword is a single word, return another visually concrete keyword related to it. The list must always contain the most relevant and appropriate query searches.
 
-For example, if the caption is 'The cheetah is the fastest land animal, capable of running at speeds up to 75 mph', the keywords should include 'cheetah', 'speed', and 'running'. Similarly, for 'The Great Wall of China is one of the most iconic landmarks in the world', the keywords should be 'Great Wall', 'landmark', and 'China'. 
+For example, if the caption is 'The cheetah is the fastest land animal, capable of running at speeds up to 75 mph', the keywords should include 'cheetah', 'speed', and 'running'. Similarly, for 'The Great Wall of China is one of the most iconic landmarks in the world', the keywords should be 'Great Wall', 'landmark', and 'China'.
 
 Please return the keywords in a simple format, without numbering or any additional prefixes, such as:
 - mountain peak
@@ -101,7 +93,7 @@ Please return the keywords in a simple format, without numbering or any addition
             if "Resource has been exhausted" in str(e) or "429" in str(e):
                 attempts += 1
                 logging.info(f"Retrying with a new API key after {delay} seconds...")
-                await asyncio.sleep(delay)
+                time.sleep(delay)
                 delay *= 2  # Exponential backoff
             else:
                 break
@@ -110,7 +102,7 @@ Please return the keywords in a simple format, without numbering or any addition
     return ""
 
 # Function to download audio file using temporary files
-async def download_audio(audio_url):
+def download_audio(audio_url):
     try:
         response = requests.get(audio_url)
         response.raise_for_status()  # Raise an error for bad responses
@@ -127,7 +119,7 @@ async def download_audio(audio_url):
     return audio_filename
 
 # Function to transcribe audio
-async def transcribe_audio(audio_filename):
+def transcribe_audio(audio_filename):
     client = OpenAI(
         api_key="FZqncRg9uxcpdKH4WVghkmtiesRr2S50",
         base_url="https://api.lemonfox.ai/v1"
@@ -147,29 +139,38 @@ async def transcribe_audio(audio_filename):
         logging.error(f"Error during transcription: {e}")
         return None
 
+# Function to extract segments from the transcription response
+def extract_segments(transcription):
+    # Access the segments directly from the transcription object
+    return transcription.get("segments", []) if transcription else []
+
 # Function to create JSON response from transcription
-async def create_json_response(transcription):
+def create_json_response(transcription):
     lines_with_keywords = []  # List to hold lines with their keywords
 
     # Extract segments using the new function
-    segments = transcription['segments'] if 'segments' in transcription else []
+    segments = extract_segments(transcription)
     total_segments = len(segments)
+
+    if total_segments == 0:
+        logging.warning("No segments found in transcription.")
+        return {"error": "No transcription segments found."}
 
     for i in range(total_segments):
         segment = segments[i]
 
         # Access attributes correctly
-        text = segment['text'] if 'text' in segment else ''
-        start_time = segment['start'] if 'start' in segment else 0  # Provide default value if key is missing
+        text = segment.get('text', '')
+        start_time = segment.get('start', 0)  # Provide default value if key is missing
 
         # Calculate finish time
         if i < total_segments - 1:
-            finish_time = segments[i + 1]['start'] if 'start' in segments[i + 1] else start_time + 1
+            finish_time = segments[i + 1].get('start', start_time + 1)
         else:
-            finish_time = segment['end'] if 'end' in segment else start_time + 1  # Default if 'end' is not present
+            finish_time = segment.get('end', start_time + 1)  # Default if 'end' is not present
 
         logging.info(f"Processing segment: '{text}'")  # Log the current segment being processed
-        keyword = await process_chunk(text)  # Generate keywords for the scene
+        keyword = process_chunk(text)  # Generate keywords for the scene
 
         if not keyword:
             logging.warning(f"No keywords generated for segment: '{text}'")  # Log if no keywords were generated
@@ -191,35 +192,24 @@ async def create_json_response(transcription):
 async def process_audio(request: AudioRequest):
     audio_url = request.audio_url  # Access the audio_url from the request body
     # Step 1: Download the audio file
-    audio_filename = await download_audio(audio_url)
+    audio_filename = download_audio(audio_url)
     
     if audio_filename:
         # Step 2: Transcribe the audio
-        transcription = await transcribe_audio(audio_filename)
+        transcription = transcribe_audio(audio_filename)
         
         if transcription:
             # Create JSON response
-            json_response = await create_json_response(transcription)
+            json_response = create_json_response(transcription)
             logging.info("Successfully processed audio.")
             # Clean up the temporary audio file
             os.remove(audio_filename)  # Remove the temporary file
             return json_response
         else:
-            return {"error": "Transcription failed"}
+            return {"error": "Error during transcription."}
     else:
-        return {"error": "Audio download failed"}
+        return {"error": "Error downloading audio."}
 
-# Function to enqueue tasks and process concurrently
-async def process_queue():
-    while True:
-        chunk = await queue.get()
-        if chunk is None:
-            break
-
-        async with semaphore:
-            result = await process_chunk(chunk)
-            # Process the result or save it somewhere
-            logging.info(f"Processed result: {result}")
 
 # Main script to start the queue processing
 if __name__ == "__main__":
