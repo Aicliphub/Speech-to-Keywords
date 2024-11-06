@@ -52,11 +52,12 @@ def create_generation_config():
         "response_mime_type": "text/plain",
     }
 
-# Function to generate keywords from text chunks
-def process_chunk(chunk):
+# Bulk process function to generate keywords for multiple chunks
+def process_chunks_in_bulk(chunks):
     max_attempts = len(gemini_api_keys)
     delay = 2  # Start with a 2-second delay
     attempts = 0
+    bulk_results = []
 
     while attempts < max_attempts:
         api_key = get_random_api_key()
@@ -70,8 +71,6 @@ def process_chunk(chunk):
 
 Given the following video script and captions, extract three visually concrete and specific keywords from each sentence that can be used to search for background videos. The keywords should be short (preferably 1-2 words) and capture the main essence of the sentence. If a keyword is a single word, return another visually concrete keyword related to it. The list must always contain the most relevant and appropriate query searches.
 
-For example, if the caption is 'The cheetah is the fastest land animal, capable of running at speeds up to 75 mph', the keywords should include 'cheetah', 'speed', and 'running'. Similarly, for 'The Great Wall of China is one of the most iconic landmarks in the world', the keywords should be 'Great Wall', 'landmark', and 'China'.
-
 Please return the keywords in a simple format, without numbering or any additional prefixes, such as:
 - mountain peak
 - challenging trail
@@ -79,13 +78,12 @@ Please return the keywords in a simple format, without numbering or any addition
 """
             )
 
-            chat_session = model.start_chat(
-                history=[{"role": "user", "parts": [chunk]}]
-            )
-
-            response = chat_session.send_message(chunk)
+            # Send chunks as a bulk request
+            response = model.start_chat(history=[{"role": "user", "parts": chunks}]).send_message(" ".join(chunks))
+            
             if response and hasattr(response, 'text') and response.text:
-                return response.text.strip()
+                bulk_results.extend(response.text.strip().splitlines())
+                break  # Successfully processed the bulk request, exit the loop
 
         except Exception as e:
             logging.error(f"API key {api_key} failed: {e}")
@@ -98,8 +96,14 @@ Please return the keywords in a simple format, without numbering or any addition
             else:
                 break
 
-    logging.error("All API keys exhausted or failed.")
-    return ""
+    if not bulk_results:
+        logging.error("All API keys exhausted or failed.")
+    
+    # Ensure bulk_results has results for each chunk, fill in blank keywords if necessary
+    while len(bulk_results) < len(chunks):
+        bulk_results.append("")
+
+    return bulk_results
 
 # Function to download audio file using temporary files
 def download_audio(audio_url):
@@ -141,65 +145,48 @@ def transcribe_audio(audio_filename):
 
 # Function to extract segments from the transcription response
 def extract_segments(transcription):
-    # Access the segments directly from the transcription object
     return transcription.segments if hasattr(transcription, 'segments') else []
 
 # Function to create JSON response from transcription
 def create_json_response(transcription):
-    lines_with_keywords = []  # List to hold lines with their keywords
+    lines_with_keywords = []
 
     # Extract segments using the new function
     segments = extract_segments(transcription)
     total_segments = len(segments)
 
+    # Process chunks in bulk
+    chunk_texts = [segment.text for segment in segments]
+    keywords_bulk = process_chunks_in_bulk(chunk_texts)
+
     for i in range(total_segments):
         segment = segments[i]
-
-        # Access attributes correctly
         text = segment.text if hasattr(segment, 'text') else ''
-        start_time = segment.start if hasattr(segment, 'start') else 0  # Provide default value if key is missing
+        start_time = segment.start if hasattr(segment, 'start') else 0
+        finish_time = segments[i + 1].start if i < total_segments - 1 else segment.end if hasattr(segment, 'end') else start_time + 1
 
-        # Calculate finish time
-        if i < total_segments - 1:
-            finish_time = segments[i + 1].start if hasattr(segments[i + 1], 'start') else start_time + 1
-        else:
-            finish_time = segment.end if hasattr(segment, 'end') else start_time + 1  # Default if 'end' is not present
-
-        logging.info(f"Processing segment: '{text}'")  # Log the current segment being processed
-        keyword = process_chunk(text)  # Generate keywords for the scene
-
-        if not keyword:
-            logging.warning(f"No keywords generated for segment: '{text}'")  # Log if no keywords were generated
-
-        # Append to the list for JSON response
         lines_with_keywords.append({
             "text": text,
-            "keyword": keyword,
-            "start": start_time,  # Including start timestamp
-            "finish": finish_time  # Including finish timestamp
+            "keyword": keywords_bulk[i],
+            "start": start_time,
+            "finish": finish_time
         })
 
-    return {
-        "transcription": lines_with_keywords
-    }
+    return {"transcription": lines_with_keywords}
 
 # FastAPI endpoint for audio processing
 @app.post("/process-audio/")
 async def process_audio(request: AudioRequest):
-    audio_url = request.audio_url  # Access the audio_url from the request body
-    # Step 1: Download the audio file
+    audio_url = request.audio_url
     audio_filename = download_audio(audio_url)
     
     if audio_filename:
-        # Step 2: Transcribe the audio
         transcription = transcribe_audio(audio_filename)
         
         if transcription:
-            # Create JSON response
             json_response = create_json_response(transcription)
             logging.info("Successfully processed audio.")
-            # Clean up the temporary audio file
-            os.remove(audio_filename)  # Remove the temporary file
+            os.remove(audio_filename)
             return json_response
         else:
             return {"error": "Transcription failed"}
