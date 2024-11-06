@@ -108,36 +108,105 @@ def download_audio(audio_url):
         response.raise_for_status()  # Raise an error for bad responses
         
         # Create a temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
-            tmp_file.write(response.content)
-            return tmp_file.name
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Failed to download audio: {e}")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as audio_file:
+            audio_file.write(response.content)
+            audio_filename = audio_file.name  # Get the name of the temporary file
+
+        logging.info(f"Downloaded audio file: {audio_filename}")
+    except Exception as e:
+        logging.error(f"Error downloading audio file: {e}")
+        return None
+    return audio_filename
+
+# Function to transcribe audio
+def transcribe_audio(audio_filename):
+    client = OpenAI(
+        api_key="FZqncRg9uxcpdKH4WVghkmtiesRr2S50",
+        base_url="https://api.lemonfox.ai/v1"
+    )
+    
+    try:
+        with open(audio_filename, "rb") as audio_file:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                language="en",
+                response_format="verbose_json"  # Requesting verbose JSON format
+            )
+            logging.info(f"Transcription Response: {transcript}")
+            return transcript
+    except Exception as e:
+        logging.error(f"Error during transcription: {e}")
         return None
 
-# Function to handle transcription and fix the error
-def create_json_response(transcription):
-    try:
-        # Extract transcription segments directly (no .get() needed)
-        segments = transcription.segments if transcription else []
-        response_data = {"segments": [{"start": segment.start, "end": segment.end, "text": segment.text} for segment in segments]}
-        return json.dumps(response_data)
-    except Exception as e:
-        logging.error(f"Error creating JSON response: {e}")
-        return {}
+# Function to extract segments from the transcription response
+def extract_segments(transcription):
+    # Access the segments directly from the transcription object
+    return transcription.segments if hasattr(transcription, 'segments') else []
 
-# FastAPI route to process the audio
+# Function to create JSON response from transcription
+def create_json_response(transcription):
+    lines_with_keywords = []  # List to hold lines with their keywords
+
+    # Extract segments using the new function
+    segments = extract_segments(transcription)
+    total_segments = len(segments)
+
+    for i in range(total_segments):
+        segment = segments[i]
+
+        # Access attributes correctly
+        text = segment.text if hasattr(segment, 'text') else ''
+        start_time = segment.start if hasattr(segment, 'start') else 0  # Provide default value if key is missing
+
+        # Calculate finish time
+        if i < total_segments - 1:
+            finish_time = segments[i + 1].start if hasattr(segments[i + 1], 'start') else start_time + 1
+        else:
+            finish_time = segment.end if hasattr(segment, 'end') else start_time + 1  # Default if 'end' is not present
+
+        logging.info(f"Processing segment: '{text}'")  # Log the current segment being processed
+        keyword = process_chunk(text)  # Generate keywords for the scene
+
+        if not keyword:
+            logging.warning(f"No keywords generated for segment: '{text}'")  # Log if no keywords were generated
+
+        # Append to the list for JSON response
+        lines_with_keywords.append({
+            "text": text,
+            "keyword": keyword,
+            "start": start_time,  # Including start timestamp
+            "finish": finish_time  # Including finish timestamp
+        })
+
+    return {
+        "transcription": lines_with_keywords
+    }
+
+# FastAPI endpoint for audio processing
 @app.post("/process-audio/")
 async def process_audio(request: AudioRequest):
-    audio_url = request.audio_url
-    audio_file = download_audio(audio_url)
+    audio_url = request.audio_url  # Access the audio_url from the request body
+    # Step 1: Download the audio file
+    audio_filename = download_audio(audio_url)
+    
+    if audio_filename:
+        # Step 2: Transcribe the audio
+        transcription = transcribe_audio(audio_filename)
+        
+        if transcription:
+            # Create JSON response
+            json_response = create_json_response(transcription)
+            logging.info("Successfully processed audio.")
+            # Clean up the temporary audio file
+            os.remove(audio_filename)  # Remove the temporary file
+            return json_response
+        else:
+            return {"error": "Transcription failed"}
+    else:
+        return {"error": "Audio download failed"}
 
-    if audio_file is None:
-        return {"error": "Failed to download audio"}
-
-    # Transcription step (assuming you've integrated transcription API here)
-    transcription = some_transcription_function(audio_file)  # You would implement or replace this
-
-    # Convert transcription to JSON response
-    json_response = create_json_response(transcription)
-    return json_response
+# Main script
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
