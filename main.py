@@ -1,6 +1,4 @@
 import asyncio
-from asyncio import Queue
-import aiohttp
 import requests
 import logging
 import json
@@ -14,12 +12,14 @@ from openai import OpenAI
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from asyncio import Semaphore
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 
 # Initialize FastAPI app
 app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -54,52 +54,50 @@ def create_generation_config():
         "response_mime_type": "text/plain",
     }
 
-# Shared queue and rate limiter
-request_queue = Queue()
-MAX_REQUESTS_PER_MINUTE = 60
-RATE_LIMIT_PERIOD = 60  # seconds
+# Semaphore to limit concurrency to 10
+semaphore = Semaphore(10)
 
-# Asynchronous function to process requests from the queue
-async def process_queue():
-    async with aiohttp.ClientSession() as session:
-        while True:
-            chunk, future = await request_queue.get()
-            try:
-                result = await process_chunk_async(chunk, session)
-                future.set_result(result)
-            except Exception as e:
-                future.set_exception(e)
-            finally:
-                request_queue.task_done()
+# Queue to manage requests
+queue = asyncio.Queue()
 
-            # Rate limiting
-            await asyncio.sleep(RATE_LIMIT_PERIOD / MAX_REQUESTS_PER_MINUTE)
-
-# Asynchronous version of process_chunk
-async def process_chunk_async(chunk, session):
+# Function to process chunk asynchronously
+async def process_chunk(chunk):
     max_attempts = len(gemini_api_keys)
     delay = 2  # Start with a 2-second delay
     attempts = 0
+
     while attempts < max_attempts:
         api_key = get_random_api_key()
         genai.configure(api_key=api_key)
+
         try:
             model = genai.GenerativeModel(
                 model_name="gemini-1.5-pro-002",
                 generation_config=create_generation_config(),
                 system_instruction="""# Instructions
-                Given the following video script and captions, extract three visually concrete and specific keywords from each sentence that can be used to search for background videos. The keywords should be short (preferably 1-2 words) and capture the main essence of the sentence. If a keyword is a single word, return another visually concrete keyword related to it. The list must always contain the most relevant and appropriate query searches.
 
-For example, if the caption is 'The cheetah is the fastest land animal, capable of running at speeds up to 75 mph', the keywords should include 'cheetah', 'speed', and 'running'. Similarly, for 'The Great Wall of China is one of the most iconic landmarks in the world', the keywords should be 'Great Wall', 'landmark', and 'China'."""
+Given the following video script and captions, extract three visually concrete and specific keywords from each sentence that can be used to search for background videos. The keywords should be short (preferably 1-2 words) and capture the main essence of the sentence. If a keyword is a single word, return another visually concrete keyword related to it. The list must always contain the most relevant and appropriate query searches.
+
+For example, if the caption is 'The cheetah is the fastest land animal, capable of running at speeds up to 75 mph', the keywords should include 'cheetah', 'speed', and 'running'. Similarly, for 'The Great Wall of China is one of the most iconic landmarks in the world', the keywords should be 'Great Wall', 'landmark', and 'China'. 
+
+Please return the keywords in a simple format, without numbering or any additional prefixes, such as:
+- mountain peak
+- challenging trail
+- difficult journey
+"""
             )
+
             chat_session = model.start_chat(
                 history=[{"role": "user", "parts": [chunk]}]
             )
-            response = await asyncio.to_thread(chat_session.send_message, chunk)
+
+            response = chat_session.send_message(chunk)
             if response and hasattr(response, 'text') and response.text:
                 return response.text.strip()
+
         except Exception as e:
             logging.error(f"API key {api_key} failed: {e}")
+
             if "Resource has been exhausted" in str(e) or "429" in str(e):
                 attempts += 1
                 logging.info(f"Retrying with a new API key after {delay} seconds...")
@@ -107,17 +105,12 @@ For example, if the caption is 'The cheetah is the fastest land animal, capable 
                 delay *= 2  # Exponential backoff
             else:
                 break
+
     logging.error("All API keys exhausted or failed.")
     return ""
 
-# Modified process_chunk function to use the queue
-async def process_chunk(chunk):
-    future = asyncio.Future()
-    await request_queue.put((chunk, future))
-    return await future
-
 # Function to download audio file using temporary files
-def download_audio(audio_url):
+async def download_audio(audio_url):
     try:
         response = requests.get(audio_url)
         response.raise_for_status()  # Raise an error for bad responses
@@ -134,7 +127,7 @@ def download_audio(audio_url):
     return audio_filename
 
 # Function to transcribe audio
-def transcribe_audio(audio_filename):
+async def transcribe_audio(audio_filename):
     client = OpenAI(
         api_key="FZqncRg9uxcpdKH4WVghkmtiesRr2S50",
         base_url="https://api.lemonfox.ai/v1"
@@ -154,68 +147,84 @@ def transcribe_audio(audio_filename):
         logging.error(f"Error during transcription: {e}")
         return None
 
-# Function to extract segments from the transcription response
-def extract_segments(transcription):
-    return transcription['segments'] if 'segments' in transcription else []
-
-# Modified create_json_response function to use async process_chunk
+# Function to create JSON response from transcription
 async def create_json_response(transcription):
-    lines_with_keywords = []
-    segments = extract_segments(transcription)
+    lines_with_keywords = []  # List to hold lines with their keywords
+
+    # Extract segments using the new function
+    segments = transcription['segments'] if 'segments' in transcription else []
     total_segments = len(segments)
-    
-    # Process chunks concurrently
-    tasks = []
+
     for i in range(total_segments):
         segment = segments[i]
-        text = segment.get('text', '')
-        start_time = segment.get('start', 0)
-        
+
+        # Access attributes correctly
+        text = segment['text'] if 'text' in segment else ''
+        start_time = segment['start'] if 'start' in segment else 0  # Provide default value if key is missing
+
+        # Calculate finish time
         if i < total_segments - 1:
-            finish_time = segments[i + 1].get('start', start_time + 1)
+            finish_time = segments[i + 1]['start'] if 'start' in segments[i + 1] else start_time + 1
         else:
-            finish_time = segment.get('end', start_time + 1)
-        
-        task = asyncio.create_task(process_chunk(text))
-        tasks.append((text, start_time, finish_time, task))
-    
-    # Wait for all tasks to complete
-    for text, start_time, finish_time, task in tasks:
-        keyword = await task
+            finish_time = segment['end'] if 'end' in segment else start_time + 1  # Default if 'end' is not present
+
+        logging.info(f"Processing segment: '{text}'")  # Log the current segment being processed
+        keyword = await process_chunk(text)  # Generate keywords for the scene
+
+        if not keyword:
+            logging.warning(f"No keywords generated for segment: '{text}'")  # Log if no keywords were generated
+
+        # Append to the list for JSON response
         lines_with_keywords.append({
             "text": text,
             "keyword": keyword,
-            "start": start_time,
-            "finish": finish_time
+            "start": start_time,  # Including start timestamp
+            "finish": finish_time  # Including finish timestamp
         })
-    
+
     return {
         "transcription": lines_with_keywords
     }
 
-# FastAPI endpoint to process audio
+# FastAPI endpoint for audio processing
 @app.post("/process-audio/")
 async def process_audio(request: AudioRequest):
-    audio_url = request.audio_url
-    audio_filename = download_audio(audio_url)
+    audio_url = request.audio_url  # Access the audio_url from the request body
+    # Step 1: Download the audio file
+    audio_filename = await download_audio(audio_url)
+    
     if audio_filename:
-        transcription = transcribe_audio(audio_filename)
+        # Step 2: Transcribe the audio
+        transcription = await transcribe_audio(audio_filename)
+        
         if transcription:
+            # Create JSON response
             json_response = await create_json_response(transcription)
             logging.info("Successfully processed audio.")
-            os.remove(audio_filename)
+            # Clean up the temporary audio file
+            os.remove(audio_filename)  # Remove the temporary file
             return json_response
         else:
             return {"error": "Transcription failed"}
     else:
         return {"error": "Audio download failed"}
 
-# Start the queue processor
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(process_queue())
+# Function to enqueue tasks and process concurrently
+async def process_queue():
+    while True:
+        chunk = await queue.get()
+        if chunk is None:
+            break
 
-# Main script
+        async with semaphore:
+            result = await process_chunk(chunk)
+            # Process the result or save it somewhere
+            logging.info(f"Processed result: {result}")
+
+# Main script to start the queue processing
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    # Start queue processing in a separate task
+    asyncio.run(process_queue())
