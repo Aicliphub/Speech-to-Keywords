@@ -79,10 +79,14 @@ def process_chunk(chunk):
                     },
                 ]
             )
-            
-            # Extract response from the chat session
+
+            # Log the response status to better debug the issue
+            logging.info(f"Chat session initiated with API key: {api_key}")
+
+            # Check for response and log it for debugging
             if chat_session and hasattr(chat_session, 'response'):
                 response = chat_session.response
+                logging.info(f"Response received: {response}")
                 return response  # Return the generated response
             else:
                 logging.error("No response from Gemini API")
@@ -108,7 +112,7 @@ async def generate_keywords(request: JsonUrlRequest):
 
         # Extract scene text chunks from the JSON data
         scene_chunks = [scene['text'] for scene in json_data]
-        
+
         # Generate keywords for each scene chunk
         result = []
         for chunk in scene_chunks:
@@ -123,4 +127,3 @@ async def generate_keywords(request: JsonUrlRequest):
     except Exception as e:
         logging.error(f"Error processing request: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
-
