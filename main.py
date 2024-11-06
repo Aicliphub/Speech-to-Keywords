@@ -1,9 +1,6 @@
 import requests
 import logging
-import json
 import random
-import time
-import uuid
 import tempfile
 import os
 import google.generativeai as genai
@@ -41,16 +38,6 @@ gemini_api_keys = [
 # Function to select a random API key
 def get_random_api_key():
     return random.choice(gemini_api_keys)
-
-# Function to create generation configuration for keyword generation
-def create_generation_config():
-    return {
-        "temperature": 2,
-        "top_p": 0.95,
-        "top_k": 40,
-        "max_output_tokens": 8192,
-        "response_mime_type": "text/plain",
-    }
 
 # Function to download audio file using temporary files
 def download_audio(audio_url):
@@ -90,49 +77,53 @@ def transcribe_audio(audio_filename):
         logging.error(f"Error during transcription: {e}")
         return None
 
-# Function to process multiple segments for keyword generation in bulk
-def process_segments_bulk(segments):
-    text_chunks = [segment['text'] for segment in segments]
-    chunk_text = "\n".join(text_chunks)
-    
+# Function to generate keywords from the transcription text file using Gemini
+def generate_keywords_from_textfile(transcription_text):
     api_key = get_random_api_key()
     genai.configure(api_key=api_key)
     
+    # Write transcription to a temp text file for processing
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as text_file:
+        text_file.write(transcription_text.encode('utf-8'))
+        text_filename = text_file.name
+
     try:
         model = genai.GenerativeModel(
             model_name="gemini-1.5-pro-002",
-            generation_config=create_generation_config(),
+            generation_config={
+                "temperature": 2,
+                "top_p": 0.95,
+                "top_k": 40,
+                "max_output_tokens": 8192,
+                "response_mime_type": "text/plain",
+            },
             system_instruction="""# Instructions
             
-Given the following video script and captions, extract three visually concrete and specific keywords from each line to use for background video searches. The keywords should be short and specific to the content of each line.
-
-Please return the keywords in a simple format for each line, such as:
+Extract three visually concrete and specific keywords from each line for background video searches. 
+Return each line's keywords in a simple format:
 - cheetah speed running
 - Great Wall landmark China
-""",
+"""
         )
         
-        chat_session = model.start_chat(history=[{"role": "user", "parts": [chunk_text]}])
-        response = chat_session.send_message(chunk_text)
-        keywords = response.text.strip().split("\n") if response and hasattr(response, 'text') and response.text else []
+        # Read the transcription text from the temp file
+        with open(text_filename, "r") as file:
+            transcription_content = file.read()
+
+        chat_session = model.start_chat(history=[{"role": "user", "parts": [transcription_content]}])
+        response = chat_session.send_message(transcription_content)
         
-        # Map the keywords to segments
-        for i, segment in enumerate(segments):
-            segment["keyword"] = keywords[i] if i < len(keywords) else ""
+        if response and hasattr(response, 'text') and response.text:
+            keywords = response.text.strip().split("\n")
+        else:
+            keywords = []
         
     except Exception as e:
         logging.error(f"Keyword generation error: {e}")
-        for segment in segments:
-            segment["keyword"] = ""  # Leave empty if keyword generation fails
+        keywords = []
 
-    return segments
-
-# Function to create JSON response from transcription segments
-def create_json_response(transcription):
-    segments = [{"text": segment['text'], "start": segment['start'], "end": segment['end']} for segment in transcription.segments]
-    segments = process_segments_bulk(segments)  # Process all segments at once for keywords
-    
-    return {"transcription": segments}
+    os.remove(text_filename)  # Clean up temp file
+    return keywords
 
 # FastAPI endpoint for audio processing
 @app.post("/process-audio/")
@@ -144,10 +135,15 @@ async def process_audio(request: AudioRequest):
         transcription = transcribe_audio(audio_filename)
         
         if transcription:
-            json_response = create_json_response(transcription)
-            logging.info("Successfully processed audio.")
+            # Join all segment texts to create a single transcription text
+            transcription_text = "\n".join(segment['text'] for segment in transcription.segments)
+            keywords = generate_keywords_from_textfile(transcription_text)
+
+            # Remove audio file after processing
             os.remove(audio_filename)
-            return json_response
+
+            # Return JSON response containing only keywords for each segment
+            return {"keywords": keywords}
         else:
             return {"error": "Transcription failed"}
     else:
