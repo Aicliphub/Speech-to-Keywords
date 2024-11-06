@@ -28,6 +28,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+
 
 # Define a request model
 class AudioRequest(BaseModel):
@@ -215,19 +218,15 @@ async def process_audio(request: AudioRequest):
 
     # Clean up the temporary audio file
     os.remove(audio_filename)  # Remove the temporary file
-
-    # Ensure correct attributes are accessed
     segments_json = [
-        {"text": segment.text, "start": segment.start, "finish": segment.finish}
+        {"text": segment["text"], "start": segment["start"], "finish": segment["end"]}
         for segment in transcription.segments
     ]
-    
     try:
-        segments_with_keywords = generate_keywords_from_segments(segments_json)
+        segements_with_keywords = generate_keywords_from_segments(segments_json)
     except Exception as e:
         return {"error": f"An LLM error happened {e}"}
-
-    return {"transcriptions": segments_with_keywords}
+    return {"transcriptions": segements_with_keywords}
 
 
 # Main script
