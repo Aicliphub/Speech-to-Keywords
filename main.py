@@ -52,69 +52,16 @@ def create_generation_config():
         "response_mime_type": "text/plain",
     }
 
-# Bulk process function to generate keywords for multiple chunks
-def process_chunks_in_bulk(chunks):
-    max_attempts = len(gemini_api_keys)
-    delay = 2  # Start with a 2-second delay
-    attempts = 0
-    bulk_results = []
-
-    while attempts < max_attempts:
-        api_key = get_random_api_key()
-        genai.configure(api_key=api_key)
-
-        try:
-            model = genai.GenerativeModel(
-                model_name="gemini-1.5-pro-002",
-                generation_config=create_generation_config(),
-                system_instruction="""# Instructions
-
-Given the following video script and captions, extract three visually concrete and specific keywords from each sentence that can be used to search for background videos. The keywords should be short (preferably 1-2 words) and capture the main essence of the sentence. If a keyword is a single word, return another visually concrete keyword related to it. The list must always contain the most relevant and appropriate query searches.
-
-Please return the keywords in a simple format, without numbering or any additional prefixes, such as:
-- mountain peak
-- challenging trail
-- difficult journey
-"""
-            )
-
-            # Send chunks as a bulk request
-            response = model.start_chat(history=[{"role": "user", "parts": chunks}]).send_message(" ".join(chunks))
-            
-            if response and hasattr(response, 'text') and response.text:
-                bulk_results.extend(response.text.strip().splitlines())
-                break  # Successfully processed the bulk request, exit the loop
-
-        except Exception as e:
-            logging.error(f"API key {api_key} failed: {e}")
-
-            if "Resource has been exhausted" in str(e) or "429" in str(e):
-                attempts += 1
-                logging.info(f"Retrying with a new API key after {delay} seconds...")
-                time.sleep(delay)
-                delay *= 2  # Exponential backoff
-            else:
-                break
-
-    if not bulk_results:
-        logging.error("All API keys exhausted or failed.")
-    
-    # Ensure bulk_results has results for each chunk, fill in blank keywords if necessary
-    while len(bulk_results) < len(chunks):
-        bulk_results.append("")
-
-    return bulk_results
-
 # Function to download audio file using temporary files
 def download_audio(audio_url):
     try:
         response = requests.get(audio_url)
-        response.raise_for_status()  # Raise an error for bad responses
+        response.raise_for_status()
         
         # Create a temporary file
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as audio_file:
             audio_file.write(response.content)
-            audio_filename = audio_file.name  # Get the name of the temporary file
+            audio_filename = audio_file.name
 
         logging.info(f"Downloaded audio file: {audio_filename}")
     except Exception as e:
@@ -135,7 +82,7 @@ def transcribe_audio(audio_filename):
                 model="whisper-1",
                 file=audio_file,
                 language="en",
-                response_format="verbose_json"  # Requesting verbose JSON format
+                response_format="verbose_json"
             )
             logging.info(f"Transcription Response: {transcript}")
             return transcript
@@ -143,36 +90,49 @@ def transcribe_audio(audio_filename):
         logging.error(f"Error during transcription: {e}")
         return None
 
-# Function to extract segments from the transcription response
-def extract_segments(transcription):
-    return transcription.segments if hasattr(transcription, 'segments') else []
+# Function to process multiple segments for keyword generation in bulk
+def process_segments_bulk(segments):
+    text_chunks = [segment['text'] for segment in segments]
+    chunk_text = "\n".join(text_chunks)
+    
+    api_key = get_random_api_key()
+    genai.configure(api_key=api_key)
+    
+    try:
+        model = genai.GenerativeModel(
+            model_name="gemini-1.5-pro-002",
+            generation_config=create_generation_config(),
+            system_instruction="""# Instructions
+            
+Given the following video script and captions, extract three visually concrete and specific keywords from each line to use for background video searches. The keywords should be short and specific to the content of each line.
 
-# Function to create JSON response from transcription
+Please return the keywords in a simple format for each line, such as:
+- cheetah speed running
+- Great Wall landmark China
+""",
+        )
+        
+        chat_session = model.start_chat(history=[{"role": "user", "parts": [chunk_text]}])
+        response = chat_session.send_message(chunk_text)
+        keywords = response.text.strip().split("\n") if response and hasattr(response, 'text') and response.text else []
+        
+        # Map the keywords to segments
+        for i, segment in enumerate(segments):
+            segment["keyword"] = keywords[i] if i < len(keywords) else ""
+        
+    except Exception as e:
+        logging.error(f"Keyword generation error: {e}")
+        for segment in segments:
+            segment["keyword"] = ""  # Leave empty if keyword generation fails
+
+    return segments
+
+# Function to create JSON response from transcription segments
 def create_json_response(transcription):
-    lines_with_keywords = []
-
-    # Extract segments using the new function
-    segments = extract_segments(transcription)
-    total_segments = len(segments)
-
-    # Process chunks in bulk
-    chunk_texts = [segment.text for segment in segments]
-    keywords_bulk = process_chunks_in_bulk(chunk_texts)
-
-    for i in range(total_segments):
-        segment = segments[i]
-        text = segment.text if hasattr(segment, 'text') else ''
-        start_time = segment.start if hasattr(segment, 'start') else 0
-        finish_time = segments[i + 1].start if i < total_segments - 1 else segment.end if hasattr(segment, 'end') else start_time + 1
-
-        lines_with_keywords.append({
-            "text": text,
-            "keyword": keywords_bulk[i],
-            "start": start_time,
-            "finish": finish_time
-        })
-
-    return {"transcription": lines_with_keywords}
+    segments = [{"text": segment['text'], "start": segment['start'], "end": segment['end']} for segment in transcription.segments]
+    segments = process_segments_bulk(segments)  # Process all segments at once for keywords
+    
+    return {"transcription": segments}
 
 # FastAPI endpoint for audio processing
 @app.post("/process-audio/")
