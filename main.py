@@ -1,20 +1,15 @@
-import requests
-import logging
-import random
-import tempfile
-import os
-import google.generativeai as genai
-from openai import OpenAI
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+from fastapi.middleware.cors import CORSMiddleware
+import httpx
+import random
+import logging
+import google.generativeai as genai
 
 # Initialize FastAPI app
 app = FastAPI()
 
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,10 +18,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Define a request model
-class AudioRequest(BaseModel):
-    audio_url: str
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
+# Gemini API keys
 gemini_api_keys = [
     "AIzaSyCzmcLIlYR0kUsrZmTHolm_qO8yzPaaUNk",
     "AIzaSyDxxzuuGGh1wT_Hjl7-WFNDXR8FL72XeFM",
@@ -35,121 +30,86 @@ gemini_api_keys = [
     "AIzaSyBaJWXjRAd39VYzGCmoz-yv4tJ6FiNTvIs"
 ]
 
-# Function to select a random API key
 def get_random_api_key():
+    """Select a random API key from the list."""
     return random.choice(gemini_api_keys)
 
-# Function to download audio file using temporary files
-def download_audio(audio_url):
-    try:
-        response = requests.get(audio_url)
+def create_generation_config():
+    """Create the model configuration."""
+    return {
+        "temperature": 2,
+        "top_p": 0.95,
+        "top_k": 40,
+        "max_output_tokens": 100,
+        "response_mime_type": "text/plain",
+    }
+
+async def fetch_json(url: str):
+    """Fetch JSON data from a given URL."""
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url)
         response.raise_for_status()
-        
-        # Create a temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as audio_file:
-            audio_file.write(response.content)
-            audio_filename = audio_file.name
+        return response.json()
 
-        logging.info(f"Downloaded audio file: {audio_filename}")
-    except Exception as e:
-        logging.error(f"Error downloading audio file: {e}")
-        return None
-    return audio_filename
+async def generate_keywords_for_text(text):
+    """Generate keywords using the Gemini API with retries and API key rotation."""
+    max_attempts = len(gemini_api_keys)
+    attempts = 0
 
-# Function to transcribe audio
-def transcribe_audio(audio_filename):
-    client = OpenAI(
-        api_key="FZqncRg9uxcpdKH4WVghkmtiesRr2S50",
-        base_url="https://api.lemonfox.ai/v1"
-    )
-    
-    try:
-        with open(audio_filename, "rb") as audio_file:
-            transcript = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                language="en",
-                response_format="verbose_json"
+    while attempts < max_attempts:
+        api_key = get_random_api_key()
+        genai.configure(api_key=api_key)
+
+        try:
+            # Create the model
+            model = genai.GenerativeModel(
+                model_name="gemini-1.5-pro-002",
+                generation_config=create_generation_config(),
+                system_instruction="""Extract three visually concrete and specific keywords from each line for background video searches. Return each line's keywords in a simple format."""
             )
-            logging.info(f"Transcription Response: {transcript}")
-            return transcript
-    except Exception as e:
-        logging.error(f"Error during transcription: {e}")
-        return None
 
-# Function to generate keywords from the transcription text file using Gemini
-def generate_keywords_from_textfile(transcription_text):
-    api_key = get_random_api_key()
-    genai.configure(api_key=api_key)
-    
-    # Write transcription to a temp text file for processing
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as text_file:
-        text_file.write(transcription_text.encode('utf-8'))
-        text_filename = text_file.name
+            # Start chat session with the text to generate keywords
+            chat_session = model.start_chat(
+                history=[{"role": "user", "parts": [text]}]
+            )
+            response = chat_session.response
+            return response
 
+        except Exception as e:
+            logging.error(f"Attempt {attempts + 1} failed: {e}")
+            attempts += 1
+
+    raise HTTPException(status_code=500, detail="Failed to generate keywords after multiple attempts.")
+
+# Define the request schema
+class JsonUrlRequest(BaseModel):
+    json_url: str
+
+@app.post("/generate_keywords")
+async def generate_keywords(request: JsonUrlRequest):
     try:
-        model = genai.GenerativeModel(
-            model_name="gemini-1.5-pro-002",
-            generation_config={
-                "temperature": 2,
-                "top_p": 0.95,
-                "top_k": 40,
-                "max_output_tokens": 8192,
-                "response_mime_type": "text/plain",
-            },
-            system_instruction="""# Instructions
-            
-Extract three visually concrete and specific keywords from each line for background video searches. 
-Return each line's keywords in a simple format:
-- cheetah speed running
-- Great Wall landmark China
-"""
-        )
-        
-        # Read the transcription text from the temp file
-        with open(text_filename, "r") as file:
-            transcription_content = file.read()
+        # Fetch JSON data from the provided URL
+        data = await fetch_json(request.json_url)
 
-        chat_session = model.start_chat(history=[{"role": "user", "parts": [transcription_content]}])
-        response = chat_session.send_message(transcription_content)
-        
-        if response and hasattr(response, 'text') and response.text:
-            keywords = response.text.strip().split("\n")
-        else:
-            keywords = []
-        
+        # Generate keywords for each text segment
+        results = []
+        for item in data:
+            text = item["text"]
+            keywords = await generate_keywords_for_text(text)
+            item_with_keywords = {
+                "start": item["start"],
+                "end": item["end"],
+                "text": item["text"],
+                "text_offset": item["text_offset"],
+                "keywords": keywords
+            }
+            results.append(item_with_keywords)
+
+        return results
+
+    except httpx.HTTPStatusError as e:
+        logging.error(f"HTTP error fetching JSON: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch JSON data.")
     except Exception as e:
-        logging.error(f"Keyword generation error: {e}")
-        keywords = []
-
-    os.remove(text_filename)  # Clean up temp file
-    return keywords
-
-# FastAPI endpoint for audio processing
-@app.post("/process-audio/")
-async def process_audio(request: AudioRequest):
-    audio_url = request.audio_url
-    audio_filename = download_audio(audio_url)
-    
-    if audio_filename:
-        transcription = transcribe_audio(audio_filename)
-        
-        if transcription:
-            # Join all segment texts to create a single transcription text
-            transcription_text = "\n".join(segment['text'] for segment in transcription.segments)
-            keywords = generate_keywords_from_textfile(transcription_text)
-
-            # Remove audio file after processing
-            os.remove(audio_filename)
-
-            # Return JSON response containing only keywords for each segment
-            return {"keywords": keywords}
-        else:
-            return {"error": "Transcription failed"}
-    else:
-        return {"error": "Audio download failed"}
-
-# Main script
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+        logging.error(f"Error processing request: {e}")
+        raise HTTPException(status_code=500, detail="An error occurred while generating keywords.")
