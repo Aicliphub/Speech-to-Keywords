@@ -1,27 +1,14 @@
-from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
-from fastapi.middleware.cors import CORSMiddleware
-import httpx
+import os
 import random
 import logging
+import time
 import google.generativeai as genai
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+import requests
 
-# Initialize FastAPI app
-app = FastAPI()
-
-# CORS configuration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Configure logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
-# Gemini API keys
+# List of Gemini API keys
 gemini_api_keys = [
     "AIzaSyCzmcLIlYR0kUsrZmTHolm_qO8yzPaaUNk",
     "AIzaSyDxxzuuGGh1wT_Hjl7-WFNDXR8FL72XeFM",
@@ -30,30 +17,45 @@ gemini_api_keys = [
     "AIzaSyBaJWXjRAd39VYzGCmoz-yv4tJ6FiNTvIs"
 ]
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# FastAPI app initialization
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Pydantic model for the incoming request
+class JsonUrlRequest(BaseModel):
+    json_url: str
+
+# Function to get a random API key
 def get_random_api_key():
     """Select a random API key from the list."""
     return random.choice(gemini_api_keys)
 
+# Function to create the model configuration
 def create_generation_config():
     """Create the model configuration."""
     return {
         "temperature": 2,
         "top_p": 0.95,
         "top_k": 40,
-        "max_output_tokens": 100,
+        "max_output_tokens": 8192,
         "response_mime_type": "text/plain",
     }
 
-async def fetch_json(url: str):
-    """Fetch JSON data from a given URL."""
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url)
-        response.raise_for_status()
-        return response.json()
-
-async def generate_keywords_for_text(text):
-    """Generate keywords using the Gemini API with retries and API key rotation."""
+# Function to process chunk and handle API errors
+def process_chunk(chunk):
+    """Generate keywords from the given chunk using the Gemini API with retries and API key rotation."""
     max_attempts = len(gemini_api_keys)
+    delay = 2  # Start with a 2-second delay
     attempts = 0
 
     while attempts < max_attempts:
@@ -65,51 +67,60 @@ async def generate_keywords_for_text(text):
             model = genai.GenerativeModel(
                 model_name="gemini-1.5-pro-002",
                 generation_config=create_generation_config(),
-                system_instruction="""Extract three visually concrete and specific keywords from each line for background video searches. Return each line's keywords in a simple format."""
+                system_instruction="""Generate a focused 2-3 word keyword spaced with comma, for each of the following scene lines that could be used to search for a suitable image on pexels.com. The keywords should be provided directly without any additional instructions or structural markers. Ensure to read all the lines and create an equivalent entity of keyword lines. Do not skip or forget a line."""
             )
 
-            # Start chat session with the text to generate keywords
+            # Start a chat session with the provided chunk
             chat_session = model.start_chat(
-                history=[{"role": "user", "parts": [text]}]
+                history=[
+                    {
+                        "role": "user",
+                        "parts": [chunk],
+                    },
+                ]
             )
-            response = chat_session.response
-            return response
-
+            
+            # Extract response from the chat session
+            if chat_session and hasattr(chat_session, 'response'):
+                response = chat_session.response
+                return response  # Return the generated response
+            else:
+                logging.error("No response from Gemini API")
+                attempts += 1
+                time.sleep(delay)
         except Exception as e:
             logging.error(f"Attempt {attempts + 1} failed: {e}")
             attempts += 1
+            time.sleep(delay)
 
     raise HTTPException(status_code=500, detail="Failed to generate keywords after multiple attempts.")
 
-# Define the request schema
-class JsonUrlRequest(BaseModel):
-    json_url: str
-
 @app.post("/generate_keywords")
 async def generate_keywords(request: JsonUrlRequest):
+    """Receive a JSON URL and generate keywords from it."""
     try:
-        # Fetch JSON data from the provided URL
-        data = await fetch_json(request.json_url)
+        # Fetch JSON data from the URL
+        response = requests.get(request.json_url)
+        if response.status_code == 200:
+            json_data = response.json()
+        else:
+            raise HTTPException(status_code=400, detail="Failed to fetch JSON data from URL")
 
-        # Generate keywords for each text segment
-        results = []
-        for item in data:
-            text = item["text"]
-            keywords = await generate_keywords_for_text(text)
-            item_with_keywords = {
-                "start": item["start"],
-                "end": item["end"],
-                "text": item["text"],
-                "text_offset": item["text_offset"],
-                "keywords": keywords
-            }
-            results.append(item_with_keywords)
+        # Extract scene text chunks from the JSON data
+        scene_chunks = [scene['text'] for scene in json_data]
+        
+        # Generate keywords for each scene chunk
+        result = []
+        for chunk in scene_chunks:
+            keywords = process_chunk(chunk)  # Get keywords for the scene
+            result.append({
+                "text": chunk,
+                "keywords": keywords,
+            })
 
-        return results
+        return result
 
-    except httpx.HTTPStatusError as e:
-        logging.error(f"HTTP error fetching JSON: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch JSON data.")
     except Exception as e:
         logging.error(f"Error processing request: {e}")
-        raise HTTPException(status_code=500, detail="An error occurred while generating keywords.")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
