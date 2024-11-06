@@ -40,6 +40,19 @@ gemini_api_keys = [
     "AIzaSyBaJWXjRAd39VYzGCmoz-yv4tJ6FiNTvIs"
 ]
 
+# Function to select a random API key
+def get_random_api_key():
+    return random.choice(gemini_api_keys)
+
+# Function to create generation configuration for keyword generation
+def create_generation_config():
+    return {
+        "temperature": 2,
+        "top_p": 0.95,
+        "top_k": 40,
+        "max_output_tokens": 8192,
+        "response_mime_type": "text/plain",
+    }
 
 # Shared queue and rate limiter
 request_queue = Queue()
@@ -58,7 +71,7 @@ async def process_queue():
                 future.set_exception(e)
             finally:
                 request_queue.task_done()
-            
+
             # Rate limiting
             await asyncio.sleep(RATE_LIMIT_PERIOD / MAX_REQUESTS_PER_MINUTE)
 
@@ -75,8 +88,9 @@ async def process_chunk_async(chunk, session):
                 model_name="gemini-1.5-pro-002",
                 generation_config=create_generation_config(),
                 system_instruction="""# Instructions
-                ... (your prompt here)
-                """
+                Given the following video script and captions, extract three visually concrete and specific keywords from each sentence that can be used to search for background videos. The keywords should be short (preferably 1-2 words) and capture the main essence of the sentence. If a keyword is a single word, return another visually concrete keyword related to it. The list must always contain the most relevant and appropriate query searches.
+
+For example, if the caption is 'The cheetah is the fastest land animal, capable of running at speeds up to 75 mph', the keywords should include 'cheetah', 'speed', and 'running'. Similarly, for 'The Great Wall of China is one of the most iconic landmarks in the world', the keywords should be 'Great Wall', 'landmark', and 'China'."""
             )
             chat_session = model.start_chat(
                 history=[{"role": "user", "parts": [chunk]}]
@@ -102,7 +116,47 @@ async def process_chunk(chunk):
     await request_queue.put((chunk, future))
     return await future
 
-# ... rest of the existing code ...
+# Function to download audio file using temporary files
+def download_audio(audio_url):
+    try:
+        response = requests.get(audio_url)
+        response.raise_for_status()  # Raise an error for bad responses
+        
+        # Create a temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as audio_file:
+            audio_file.write(response.content)
+            audio_filename = audio_file.name  # Get the name of the temporary file
+
+        logging.info(f"Downloaded audio file: {audio_filename}")
+    except Exception as e:
+        logging.error(f"Error downloading audio file: {e}")
+        return None
+    return audio_filename
+
+# Function to transcribe audio
+def transcribe_audio(audio_filename):
+    client = OpenAI(
+        api_key="FZqncRg9uxcpdKH4WVghkmtiesRr2S50",
+        base_url="https://api.lemonfox.ai/v1"
+    )
+    
+    try:
+        with open(audio_filename, "rb") as audio_file:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                language="en",
+                response_format="verbose_json"  # Requesting verbose JSON format
+            )
+            logging.info(f"Transcription Response: {transcript}")
+            return transcript
+    except Exception as e:
+        logging.error(f"Error during transcription: {e}")
+        return None
+
+# Function to extract segments from the transcription response
+def extract_segments(transcription):
+    return transcription['segments'] if 'segments' in transcription else []
 
 # Modified create_json_response function to use async process_chunk
 async def create_json_response(transcription):
@@ -114,13 +168,13 @@ async def create_json_response(transcription):
     tasks = []
     for i in range(total_segments):
         segment = segments[i]
-        text = segment.text if hasattr(segment, 'text') else ''
-        start_time = segment.start if hasattr(segment, 'start') else 0
+        text = segment.get('text', '')
+        start_time = segment.get('start', 0)
         
         if i < total_segments - 1:
-            finish_time = segments[i + 1].start if hasattr(segments[i + 1], 'start') else start_time + 1
+            finish_time = segments[i + 1].get('start', start_time + 1)
         else:
-            finish_time = segment.end if hasattr(segment, 'end') else start_time + 1
+            finish_time = segment.get('end', start_time + 1)
         
         task = asyncio.create_task(process_chunk(text))
         tasks.append((text, start_time, finish_time, task))
@@ -139,7 +193,7 @@ async def create_json_response(transcription):
         "transcription": lines_with_keywords
     }
 
-# Modified FastAPI endpoint to use async
+# FastAPI endpoint to process audio
 @app.post("/process-audio/")
 async def process_audio(request: AudioRequest):
     audio_url = request.audio_url
