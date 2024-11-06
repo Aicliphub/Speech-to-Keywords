@@ -28,14 +28,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-
 
 # Define a request model
 class AudioRequest(BaseModel):
     audio_url: str
-
 
 # Function to download audio file using temporary files
 def download_audio(audio_url):
@@ -50,7 +46,6 @@ def download_audio(audio_url):
     logging.info(f"Downloaded audio file: {audio_filename}")
 
     return audio_filename
-
 
 # Function to transcribe audio
 def transcribe_audio(audio_filename):
@@ -69,7 +64,6 @@ def transcribe_audio(audio_filename):
         logging.info(f"Transcription Response: {transcript}")
         return transcript
 
-
 def create_generation_config():
     return genai.GenerationConfig(
         temperature=0.9,
@@ -78,10 +72,8 @@ def create_generation_config():
         max_output_tokens=2048,
     )
 
-
 class KeywordsResponse(TypedDict):
     keywords: List[List[str]]
-
 
 class APIKeyManager:
     def __init__(self, keys):
@@ -95,7 +87,6 @@ class APIKeyManager:
         self.keys.appendleft((key, current_time))
         return key
 
-
 # Initialize the API key manager
 gemini_api_keys = [
     "AIzaSyCzmcLIlYR0kUsrZmTHolm_qO8yzPaaUNk",
@@ -106,10 +97,8 @@ gemini_api_keys = [
 ]
 api_key_manager = APIKeyManager(gemini_api_keys)
 
-
 def get_next_api_key():
     return api_key_manager.get_next_key()
-
 
 def api_key_rotator(
     max_attempts: int = 5, initial_delay: float = 1, max_total_delay: float = 15
@@ -147,13 +136,11 @@ def api_key_rotator(
 
     return decorator
 
-
 class Segment(BaseModel):
     text: str
     start: float
     finish: float
     keyword: str
-
 
 @api_key_rotator()
 def generate_keywords_from_segments(segments_json) -> List[Segment]:
@@ -199,7 +186,6 @@ def generate_keywords_from_segments(segments_json) -> List[Segment]:
     else:
         raise Exception("Empty or invalid response from Gemini API")
 
-
 # FastAPI endpoint for audio processing
 @app.post("/process-audio/")
 async def process_audio(request: AudioRequest):
@@ -218,16 +204,18 @@ async def process_audio(request: AudioRequest):
 
     # Clean up the temporary audio file
     os.remove(audio_filename)  # Remove the temporary file
+
+    # Extract text, start, and finish times from transcription
     segments_json = [
-        {"text": segment["text"], "start": segment["start"], "finish": segment["end"]}
+        {"text": segment.text, "start": segment.start, "finish": segment.end}
         for segment in transcription.segments
     ]
     try:
         segements_with_keywords = generate_keywords_from_segments(segments_json)
     except Exception as e:
         return {"error": f"An LLM error happened {e}"}
-    return {"transcriptions": segements_with_keywords}
 
+    return {"transcriptions": segements_with_keywords}
 
 # Main script
 if __name__ == "__main__":
